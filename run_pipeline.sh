@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ---------------------------
 # Promethyl pipeline runner
-# Option A: CLI wrapper with sample.yml input
+# CLI wrapper with sample.yml input
 # ---------------------------
 
 # Config file passed as first argument (default: sample.yml)
@@ -25,7 +25,7 @@ REF="/path/to/reference/hg38.fa"
 THREADS=10
 
 echo "==================================="
-echo "Triomethyl pipeline starting"
+echo "Pro pipeline starting"
 echo "Config: $CONFIG"
 echo "Repo root: $ROOT_DIR"
 echo "Threads: $THREADS"
