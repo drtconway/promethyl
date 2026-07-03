@@ -1,0 +1,32 @@
+# =====================
+# Outputs (NEVER commit)
+# =====================
+output/
+*.tsv
+*.bed
+*.bam
+*.bai
+
+# modkit outputs (if stored elsewhere)
+ProbandModkit/
+modkit/
+
+# =====================
+# Python
+# =====================
+__pycache__/
+*.pyc
+*.pyo
+
+# =====================
+# Configs with real data
+# =====================
+promethyl.yml
+
+# =====================
+# System files
+# =====================
+.DS_Store
+
+reference/
+*.gtf
