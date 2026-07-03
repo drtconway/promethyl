@@ -27,7 +27,6 @@ python src/annotate_promoter_cpgs.py
 
 This intersects a GENCODE GTF (promoters defined as −2000/+500 bp around each transcript TSS) with a CpG islands BED using `bedtools intersect`, producing `CpGs_with_promoters.bed`.
 
-> Note: paths inside `annotate_promoter_cpgs.py` are currently hardcoded (GTF input, CpG islands BED, output path) — edit these at the top of the script for your environment before running.
 
 ## Usage
 
