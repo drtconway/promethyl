@@ -45,7 +45,7 @@ from scipy.stats import fisher_exact, chi2_contingency
 from bedmethyl import filter_modification, filter_sites, read_bedmethyl
 from CpG_meth import load_promoter_annotations, aggregate_to_islands
 import yaml
-from cohort import load_config, build_cohort_matrix, detect_outliers, compute_cohort_statistics
+from cohort import load_config, build_cohort_matrix, detect_outliers, compute_cohort_statistics, to_long_format
 from run_modkit import run_modkit, get_sample_methylation
 from merge_trio import merge_trio
 from annotate import annotate_methylation
@@ -173,6 +173,7 @@ def main():
                                  min_delta=args.min_delta,
                                  z_threshold=args.z_threshold)
         result = annotate_methylation(result, ann_df)
+        result = to_long_format(result, all_ids)
 
     else:
         # ── Trio mode ─────────────────────────────────────────────────

@@ -15,7 +15,7 @@ import pandas as pd
 
 from CpG_meth import load_promoter_annotations
 from annotate import annotate_methylation
-from cohort import build_cohort_matrix, detect_outliers, compute_cohort_statistics
+from cohort import build_cohort_matrix, detect_outliers, compute_cohort_statistics, to_long_format
 
 
 def parse_args():
@@ -78,6 +78,7 @@ def main():
                              min_delta=args.min_delta,
                              z_threshold=args.z_threshold)
     result = annotate_methylation(result, ann_df)
+    result = to_long_format(result, all_ids)
 
     result.to_csv(output, sep="\t", index=False)
     print(f"\n✓ Done!")

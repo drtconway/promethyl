@@ -127,7 +127,9 @@ Each sample runs as its own `MODKIT` process (so samples run concurrently, limit
 
 ## Output
 
-A TSV of CpG islands with per-sample methylation, coverage, gene/promoter annotation, and (depending on mode) either significance test results or outlier calls.
+Trio mode writes one row per CpG island (wide form), with per-sample methylation/coverage columns and significance test results.
+
+Cohort mode (both `main.py --config` and `main.nf`) writes long-form output: one row per (CpG island, sample), with a `sample` column and per-sample metrics (`methylation`, `coverage`, `n_mod`, `n_canonical`, `delta`, `zscore`, `outlier`, `pval`, `padj`) as plain columns. Locus and cohort-level columns (`chrom`, `start`, `end`, `cpg_island`, gene/promoter annotation, `cohort_mean`, `cohort_std`, `cohort_median`, `n_outliers`, `any_outlier`) repeat across each island's sample rows.
 
 ## Notes
 

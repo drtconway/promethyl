@@ -92,6 +92,45 @@ def detect_outliers(
     ).reset_index(drop=True)
 
 
+def to_long_format(df: pd.DataFrame, sample_ids: list[str]) -> pd.DataFrame:
+    """
+    Reshape a wide cohort dataframe (one row per island, per-sample columns
+    suffixed with "_<sample_id>") into long format: one row per
+    (island, sample), with per-sample metrics as plain-named columns.
+
+    Locus/annotation/cohort-level columns (chrom, start, end, cpg_island,
+    gene, cohort_mean, ...) are not sample-specific and are repeated across
+    each island's sample rows.
+    """
+    per_sample_prefixes = [
+        col[: -(len(sid) + 1)]
+        for sid in sample_ids
+        for col in df.columns
+        if col.endswith(f"_{sid}")
+    ]
+    per_sample_prefixes = sorted(set(per_sample_prefixes))
+
+    shared_cols = [
+        col for col in df.columns
+        if not any(col == f"{prefix}_{sid}" for prefix in per_sample_prefixes for sid in sample_ids)
+    ]
+
+    frames = []
+    for sid in sample_ids:
+        sample_cols = {f"{prefix}_{sid}": prefix for prefix in per_sample_prefixes if f"{prefix}_{sid}" in df.columns}
+        sub = df[shared_cols + list(sample_cols.keys())].rename(columns=sample_cols)
+        sub.insert(len(shared_cols), "sample", sid)
+        frames.append(sub)
+
+    long_df = pd.concat(frames, ignore_index=True)
+
+    if "outlier_samples" in long_df.columns:
+        long_df = long_df.drop(columns=["outlier_samples"])
+
+    sort_cols = [c for c in ["chrom", "start", "end", "sample"] if c in long_df.columns]
+    return long_df.sort_values(sort_cols).reset_index(drop=True)
+
+
 def compute_cohort_statistics(
     matrix: pd.DataFrame,
     sample_ids: list[str],
