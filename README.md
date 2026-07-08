@@ -116,7 +116,15 @@ z_threshold:  2.0
 
 Each sample runs as its own `MODKIT` process (so samples run concurrently, limited only by the executor's available resources), writing `results/modkit/<sample>_modkit.bed`. Once every sample's process completes, a single `COHORT` process merges their island-level outputs and writes `results/cohort_methylation.tsv`.
 
-`nextflow.config` defines a `standard` profile (local executor, the default) and a `slurm` profile (`-profile slurm`) for running on a Slurm cluster; both use the `promethyl_environment.yml` conda environment by default.
+`nextflow.config` defines a `standard` profile (local executor, the default) and a `slurm` profile (`-profile slurm`) for running on a Slurm cluster.
+
+Nextflow always uses a pre-built conda environment for process execution — it does not solve `promethyl_environment.yml` on the fly. By default it looks for the env at `envs/promethyl` under `$PROMETHYL_HOME` (falling back to the repo root if `PROMETHYL_HOME` isn't set), so build it there once:
+
+```bash
+conda env create -f promethyl_environment.yml -p "${PROMETHYL_HOME:-.}/envs/promethyl"
+```
+
+Override the location with `--conda_env /some/other/env` if you'd rather keep it elsewhere.
 
 ### Shared install / running batches from elsewhere
 
@@ -124,34 +132,25 @@ To install promethyl once in a shared location and run batches from other direct
 
 1. **Check out the repo once** at a shared, read-only-by-convention path, e.g. `/shared/tools/promethyl`.
 
-2. **Pre-build the conda environment there** instead of letting each job solve it (recommended on clusters where compute nodes lack channel/internet access):
+2. **Set `PROMETHYL_HOME` and pre-build the conda environment there** (recommended on clusters where compute nodes lack channel/internet access):
 
    ```bash
-   conda env create -f /shared/tools/promethyl/promethyl_environment.yml -p /shared/tools/promethyl/envs/promethyl
+   export PROMETHYL_HOME=/shared/tools/promethyl
+   conda env create -f "$PROMETHYL_HOME/promethyl_environment.yml" -p "$PROMETHYL_HOME/envs/promethyl"
    ```
 
-   Point Nextflow at the pre-built env with `--conda_env`:
-
-   ```bash
-   nextflow run /shared/tools/promethyl/main.nf \
-       --samples cohort.yaml \
-       --conda_env /shared/tools/promethyl/envs/promethyl \
-       -profile slurm
-   ```
-
-   If `--conda_env` isn't given, Nextflow falls back to solving `promethyl_environment.yml` on the fly (fine for local/dev use).
+   `nextflow.config` reads `$PROMETHYL_HOME` at run time (via `System.getenv`), so as long as it's exported before `nextflow run`, the env at `$PROMETHYL_HOME/envs/promethyl` is picked up automatically — no `--conda_env` flag needed.
 
 3. **Use the `bin/promethyl` wrapper** so batch directories don't need to know the full path to `main.nf`:
 
    ```bash
-   export PROMETHYL_HOME=/shared/tools/promethyl
    export PATH="$PROMETHYL_HOME/bin:$PATH"
 
    cd /data/cohorts/my-batch
-   promethyl --samples cohort.yaml --conda_env "$PROMETHYL_HOME/envs/promethyl" -profile slurm
+   promethyl --samples cohort.yaml -profile slurm
    ```
 
-   `promethyl` just runs `nextflow run "$PROMETHYL_HOME/main.nf" "$@"`; Nextflow's `work/` directory and outputs still land in the current directory (the batch dir), only the pipeline code and env are shared. Put the `export` lines in a module file or shared shell profile so users don't set them by hand each time.
+   `promethyl` just runs `nextflow run "$PROMETHYL_HOME/main.nf" "$@"`; Nextflow's `work/` directory and outputs still land in the current directory (the batch dir), only the pipeline code and env are shared. Put the `export PROMETHYL_HOME=...` and `export PATH=...` lines in a module file or shared shell profile so users don't set them by hand each time.
 
 ## Pipeline overview
 
