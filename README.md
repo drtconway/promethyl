@@ -85,6 +85,23 @@ Edit the `REF` variable near the top of the script to point at your local refere
 
 `modkit pileup` is skipped automatically for any sample whose bedMethyl output already exists in `--modkit-dir`, so reruns only reprocess new samples.
 
+### Parallel cohort mode (Nextflow)
+
+For cohort mode, `main.nf` parallelizes phase 1 (`modkit pileup` + island aggregation) across all samples, then runs phase 2 (cross-sample outlier analysis) once all samples finish:
+
+```bash
+nextflow run main.nf \
+    --samples sample.yml \
+    --annotation reference/CpGs_with_promoters.bed \
+    --ref /data/genome.fa \
+    --include-bed reference/CPGIslandsBED3.bed \
+    --outdir results
+```
+
+Each sample runs as its own `MODKIT` process (so samples run concurrently, limited only by the executor's available resources), writing `results/modkit/<sample>_modkit.bed`. Once every sample's process completes, a single `COHORT` process merges their island-level outputs and writes `results/cohort_methylation.tsv`.
+
+`nextflow.config` defines a `standard` profile (local executor, the default) and a `slurm` profile (`-profile slurm`) for running on a Slurm cluster; both use the `promethyl_environment.yml` conda environment. Key options: `--min-coverage`, `--mod-code`, `--min-delta`, `--z-threshold`, `--threads` (per-sample `modkit pileup` threads), `--region`.
+
 ## Pipeline overview
 
 1. **`run_modkit.py`** — runs `modkit pileup` per sample (skipped if cached output exists)
