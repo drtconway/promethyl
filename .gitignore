@@ -28,5 +28,4 @@ promethyl.yml
 # =====================
 .DS_Store
 
-reference/
 *.gtf
