@@ -15,4 +15,3 @@ dependencies:
   - pip
   - bedtools
   - modkit
-prefix: /Users/tim.green/miniconda3/envs/promethyl

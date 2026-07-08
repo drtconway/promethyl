@@ -90,17 +90,68 @@ Edit the `REF` variable near the top of the script to point at your local refere
 For cohort mode, `main.nf` parallelizes phase 1 (`modkit pileup` + island aggregation) across all samples, then runs phase 2 (cross-sample outlier analysis) once all samples finish:
 
 ```bash
-nextflow run main.nf \
-    --samples sample.yml \
-    --annotation reference/CpGs_with_promoters.bed \
-    --ref /data/genome.fa \
-    --include-bed reference/CPGIslandsBED3.bed \
-    --outdir results
+nextflow run main.nf --samples sample.yml --outdir results
 ```
+
+Every pipeline setting other than `--outdir` and `--threads` (per-sample `modkit pileup` threads, still a CLI/`params` option) is read from top-level keys in `sample.yml` instead of `--flag`s:
+
+```yaml
+samples:
+  - id: sample01
+    bam: /data/bams/sample01.bam
+  - id: sample02
+    bam: /data/bams/sample02.bam
+
+annotation:   reference/CpGs_with_promoters.bed   # required
+ref:          /data/genome.fa                     # optional
+include_bed:  reference/CPGIslandsBED3.bed         # optional
+region:       chr1:1000000-1100000                 # optional
+min_coverage: 10
+mod_code:     m
+min_delta:    0.3
+z_threshold:  2.0
+```
+
+`annotation` is required in the YAML; the rest fall back to the same defaults as `main.py` (shown above) when omitted.
 
 Each sample runs as its own `MODKIT` process (so samples run concurrently, limited only by the executor's available resources), writing `results/modkit/<sample>_modkit.bed`. Once every sample's process completes, a single `COHORT` process merges their island-level outputs and writes `results/cohort_methylation.tsv`.
 
-`nextflow.config` defines a `standard` profile (local executor, the default) and a `slurm` profile (`-profile slurm`) for running on a Slurm cluster; both use the `promethyl_environment.yml` conda environment. Key options: `--min-coverage`, `--mod-code`, `--min-delta`, `--z-threshold`, `--threads` (per-sample `modkit pileup` threads), `--region`.
+`nextflow.config` defines a `standard` profile (local executor, the default) and a `slurm` profile (`-profile slurm`) for running on a Slurm cluster; both use the `promethyl_environment.yml` conda environment by default.
+
+### Shared install / running batches from elsewhere
+
+To install promethyl once in a shared location and run batches from other directories (e.g. per-cohort working directories on an HPC), rather than checking out the repo per batch:
+
+1. **Check out the repo once** at a shared, read-only-by-convention path, e.g. `/shared/tools/promethyl`.
+
+2. **Pre-build the conda environment there** instead of letting each job solve it (recommended on clusters where compute nodes lack channel/internet access):
+
+   ```bash
+   conda env create -f /shared/tools/promethyl/promethyl_environment.yml -p /shared/tools/promethyl/envs/promethyl
+   ```
+
+   Point Nextflow at the pre-built env with `--conda_env`:
+
+   ```bash
+   nextflow run /shared/tools/promethyl/main.nf \
+       --samples cohort.yaml \
+       --conda_env /shared/tools/promethyl/envs/promethyl \
+       -profile slurm
+   ```
+
+   If `--conda_env` isn't given, Nextflow falls back to solving `promethyl_environment.yml` on the fly (fine for local/dev use).
+
+3. **Use the `bin/promethyl` wrapper** so batch directories don't need to know the full path to `main.nf`:
+
+   ```bash
+   export PROMETHYL_HOME=/shared/tools/promethyl
+   export PATH="$PROMETHYL_HOME/bin:$PATH"
+
+   cd /data/cohorts/my-batch
+   promethyl --samples cohort.yaml --conda_env "$PROMETHYL_HOME/envs/promethyl" -profile slurm
+   ```
+
+   `promethyl` just runs `nextflow run "$PROMETHYL_HOME/main.nf" "$@"`; Nextflow's `work/` directory and outputs still land in the current directory (the batch dir), only the pipeline code and env are shared. Put the `export` lines in a module file or shared shell profile so users don't set them by hand each time.
 
 ## Pipeline overview
 
