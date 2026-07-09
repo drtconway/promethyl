@@ -9,7 +9,11 @@
 #   export PROMETHYL_HOME=/shared/path/to/promethyl
 #   export PATH="$PROMETHYL_HOME/bin:$PATH"
 #   cd /my/batch/dir
-#   promethyl --samples cohort.yaml -profile slurm
+#   promethyl --samples cohort.yaml
+#
+# On Linux hosts (the HPC login nodes), -profile slurm is added automatically
+# unless you already passed -profile yourself. Override with e.g.
+# `promethyl --samples cohort.yaml -profile standard` to force local execution.
 
 set -euo pipefail
 
@@ -20,4 +24,17 @@ if [ -z "${PROMETHYL_HOME:-}" ]; then
     PROMETHYL_HOME="$(dirname "$SCRIPT_PATH")"
 fi
 
-exec nextflow run "${PROMETHYL_HOME}/main.nf" "$@"
+args=("$@")
+has_profile=false
+for arg in "${args[@]}"; do
+    if [ "$arg" = "-profile" ]; then
+        has_profile=true
+        break
+    fi
+done
+
+if [ "$has_profile" = false ] && [ "$(uname -s)" = "Linux" ]; then
+    args=(-profile slurm "${args[@]}")
+fi
+
+exec nextflow run "${PROMETHYL_HOME}/main.nf" "${args[@]}"
