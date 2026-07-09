@@ -23,6 +23,11 @@ __pycache__/
 # =====================
 promethyl.yml
 
+# Nextflow
+work/
+.nextflow/
+.nextflow.log*
+
 # =====================
 # System files
 # =====================

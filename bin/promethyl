@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Wrapper for running promethyl's Nextflow pipeline from a shared install.
+#
+# Resolves PROMETHYL_HOME (the shared install directory) and runs main.nf from
+# there via `nextflow run`, while Nextflow's own launchDir/workDir stay wherever
+# this script is invoked from — so batch directories don't need a repo checkout.
+#
+# Usage:
+#   export PROMETHYL_HOME=/shared/path/to/promethyl
+#   export PATH="$PROMETHYL_HOME/bin:$PATH"
+#   cd /my/batch/dir
+#   promethyl --samples cohort.yaml
+#
+# On Linux hosts (the HPC login nodes), -profile slurm is added automatically
+# unless you already passed -profile yourself. Override with e.g.
+# `promethyl --samples cohort.yaml -profile standard` to force local execution.
+
+set -euo pipefail
+
+if [ -z "${PROMETHYL_HOME:-}" ]; then
+    # Fall back to resolving relative to this script's location (symlink-safe),
+    # so it also works without PROMETHYL_HOME set if bin/ is on PATH directly.
+    SCRIPT_PATH="$(cd -P "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+    PROMETHYL_HOME="$(dirname "$SCRIPT_PATH")"
+fi
+
+args=("$@")
+has_profile=false
+for arg in "${args[@]}"; do
+    if [ "$arg" = "-profile" ]; then
+        has_profile=true
+        break
+    fi
+done
+
+if [ "$has_profile" = false ] && [ "$(uname -s)" = "Linux" ]; then
+    args=(-profile slurm "${args[@]}")
+fi
+
+exec nextflow run "${PROMETHYL_HOME}/main.nf" "${args[@]}"
