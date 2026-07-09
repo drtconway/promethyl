@@ -15,13 +15,25 @@ params.threads = 10
 
 if (!params.samples) { error "Provide --samples cohort.yaml" }
 
+// modkit pileup requires the BAM to already be indexed. Nextflow only stages files
+// declared as process inputs into the task work dir, so the .bai/.csi sitting next
+// to the BAM on the shared filesystem must be located and passed through explicitly.
+def findBamIndex(bamPath) {
+    for (candidate in [bamPath + '.bai', bamPath + '.csi',
+                        bamPath.replaceAll(/\.bam$/, '.bai'), bamPath.replaceAll(/\.bam$/, '.csi')]) {
+        def f = file(candidate)
+        if (f.exists()) { return f }
+    }
+    error "No BAM index (.bai/.csi) found for ${bamPath} -- run `samtools index ${bamPath}`"
+}
+
 process MODKIT {
     tag "$sample_id"
     publishDir "${params.outdir}/modkit", mode: 'copy', pattern: "*_modkit.bed"
     cpus params.threads
 
     input:
-    tuple val(sample_id), path(bam)
+    tuple val(sample_id), path(bam), path(bam_index)
     path annotation
     path ref
     path include_bed
@@ -91,7 +103,7 @@ workflow {
 
     samples_ch = Channel
         .fromList(cfg.samples)
-        .map { s -> tuple(s.id, file(s.bam)) }
+        .map { s -> tuple(s.id, file(s.bam), findBamIndex(s.bam)) }
 
     MODKIT(samples_ch, annotation, ref, include_bed, region, min_coverage, mod_code)
 
