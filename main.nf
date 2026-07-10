@@ -19,12 +19,40 @@ if (!params.samples) { error "Provide --samples cohort.yaml" }
 // declared as process inputs into the task work dir, so the .bai/.csi sitting next
 // to the BAM on the shared filesystem must be located and passed through explicitly.
 def findBamIndex(bamPath) {
-    for (candidate in [bamPath + '.bai', bamPath + '.csi',
-                        bamPath.replaceAll(/\.bam$/, '.bai'), bamPath.replaceAll(/\.bam$/, '.csi')]) {
-        def f = file(candidate)
-        if (f.exists()) { return f }
-    }
-    error "No BAM index (.bai/.csi) found for ${bamPath} -- run `samtools index ${bamPath}`"
+    def candidates = [bamPath + '.bai', bamPath + '.csi',
+                       bamPath.replaceAll(/\.bam$/, '.bai'), bamPath.replaceAll(/\.bam$/, '.csi')]
+    def found = candidates.collect { c -> file(c) }.find { f -> f.exists() }
+    found ?: error("No BAM index (.bai/.csi) found for ${bamPath} -- run `samtools index ${bamPath}`")
+}
+
+// PacBio BAMs sometimes mix reads that carry MM/ML modification-call tags with reads
+// that don't (e.g. low-pass reads the kinetics caller couldn't confidently call). modkit
+// pileup can hang when it encounters that mix, so sample the first 1000 records and, if
+// any lack MM, pre-filter to MM-tagged reads only before handing the BAM to modkit.
+process CHECK_MM_TAGS {
+    tag "$sample_id"
+
+    input:
+    tuple val(sample_id), path(bam), path(bam_index)
+
+    output:
+    tuple val(sample_id), path("out/*.bam"), path("out/*.bam.bai"), emit: bam
+
+    script:
+    """
+    mkdir out
+    untagged=\$(samtools view ${bam} | head -n 1000 | awk -F'\\t' '{ok=0; for(i=12;i<=NF;i++) if (\$i ~ /^MM:/) {ok=1; break}; if (!ok) print}' | wc -l)
+
+    if [ "\$untagged" -gt 0 ]; then
+        echo "[${sample_id}] \$untagged/1000 sampled reads missing MM tag -- filtering to MM-tagged reads"
+        samtools view -d MM -b ${bam} > out/${sample_id}.bam
+        samtools index out/${sample_id}.bam
+    else
+        echo "[${sample_id}] all sampled reads carry MM tag -- no filtering needed"
+        ln -s \$(readlink -f ${bam}) out/${sample_id}.bam
+        ln -s \$(readlink -f ${bam_index}) out/${sample_id}.bam.bai
+    fi
+    """
 }
 
 process MODKIT {
@@ -105,7 +133,9 @@ workflow {
         .fromList(cfg.samples)
         .map { s -> tuple(s.id, file(s.bam), findBamIndex(s.bam)) }
 
-    MODKIT(samples_ch, annotation, ref, include_bed, region, min_coverage, mod_code)
+    CHECK_MM_TAGS(samples_ch)
+
+    MODKIT(CHECK_MM_TAGS.out.bam, annotation, ref, include_bed, region, min_coverage, mod_code)
 
     // Collect all "id path" pairs into one list, then run the cohort process once.
     sample_args = MODKIT.out.islands
