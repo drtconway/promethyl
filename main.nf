@@ -28,7 +28,12 @@ def findBamIndex(bamPath) {
 // PacBio BAMs sometimes mix reads that carry MM/ML modification-call tags with reads
 // that don't (e.g. low-pass reads the kinetics caller couldn't confidently call). modkit
 // pileup can hang when it encounters that mix, so sample the first 1000 records and, if
-// any lack MM, pre-filter to MM-tagged reads only before handing the BAM to modkit.
+// any lack MM, split the BAM in two: reads that already carry MM/ML pass through as-is,
+// and reads with neither tag are stamped with an empty "no modified bases called" MM/ML
+// pair (C+m?;  /  B:C with no values -- note no trailing comma before ';', which would
+// encode one empty delta entry instead of zero and leave MM/ML mismatched in length) so
+// they still contribute canonical-base coverage instead of being dropped. The two halves
+// are then merged back together.
 process CHECK_MM_TAGS {
     tag "$sample_id"
 
@@ -44,8 +49,13 @@ process CHECK_MM_TAGS {
     untagged=\$(samtools view ${bam} | head -n 1000 | awk -F'\\t' '{ok=0; for(i=12;i<=NF;i++) if (\$i ~ /^MM:/) {ok=1; break}; if (!ok) print}' | wc -l)
 
     if [ "\$untagged" -gt 0 ]; then
-        echo "[${sample_id}] \$untagged/1000 sampled reads missing MM tag -- filtering to MM-tagged reads"
-        samtools view -d MM -b ${bam} > out/${sample_id}.bam
+        echo "[${sample_id}] \$untagged/1000 sampled reads missing MM tag -- stamping untagged reads with empty MM/ML"
+        samtools view -h -d MM -b -o with_mm.bam -U without_mm.bam ${bam}
+        samtools view -h without_mm.bam \
+            | awk -F'\\t' 'BEGIN{OFS="\\t"} /^@/{print; next} {print \$0, "MM:Z:C+m?;", "ML:B:C"}' \
+            | samtools view -b -o tagged.bam -
+        samtools cat with_mm.bam tagged.bam \
+            | samtools sort -@ ${task.cpus} -o out/${sample_id}.bam -
         samtools index out/${sample_id}.bam
     else
         echo "[${sample_id}] all sampled reads carry MM tag -- no filtering needed"
