@@ -163,13 +163,24 @@ def main():
         # Use only samples that produced data
         all_ids = list(sample_dfs.keys())
 
+        sample_meta = None
+        if "tissue" in meta.columns or "sex" in meta.columns:
+            sample_meta = {
+                row["id"]: {"tissue": row.get("tissue"), "sex": row.get("sex")}
+                for _, row in meta.iterrows()
+            }
+            print(f"  Cohort statistics restricted to tissue-matched (and, on chrX, sex-matched) samples")
+        else:
+            print(f"  WARNING: no tissue/sex columns in {args.config} — comparing every sample "
+                  f"against every other sample regardless of tissue/sex")
+
         matrix = build_cohort_matrix(sample_dfs)
         print(f"\n  Islands covered across all samples: {len(matrix):,}")
 
-        result = compute_cohort_statistics(matrix, all_ids,
+        result = compute_cohort_statistics(matrix, all_ids, sample_meta=sample_meta,
                                            min_delta=args.min_delta,
                                            z_threshold=args.z_threshold)
-        result = detect_outliers(result, all_ids,
+        result = detect_outliers(result, all_ids, sample_meta=sample_meta,
                                  min_delta=args.min_delta,
                                  z_threshold=args.z_threshold)
         result = annotate_methylation(result, ann_df)
