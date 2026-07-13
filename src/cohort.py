@@ -25,6 +25,34 @@ def load_config(path: str) -> pd.DataFrame:
     return pd.DataFrame(cfg["samples"])
 
 
+def _comparison_group(sid: str, sample_ids: list[str], sample_meta: dict, match_sex: bool) -> list[str]:
+    """
+    Other samples eligible to be pooled as the "rest" background for `sid`.
+
+    Always restricted to the same tissue. If `match_sex` is True (X-chromosome
+    sites), also restricted to the same sex -- X-linked methylation differs
+    systematically between sexes (X-inactivation mosaicism in females vs.
+    hemizygous males), so mixing sexes there produces spurious outliers.
+    Samples missing from `sample_meta` or missing tissue/sex are excluded
+    from every group rather than guessed at.
+    """
+    meta_sid = sample_meta.get(sid)
+    if not meta_sid or not meta_sid.get("tissue") or (match_sex and not meta_sid.get("sex")):
+        return []
+
+    group = []
+    for s in sample_ids:
+        if s == sid:
+            continue
+        meta_s = sample_meta.get(s)
+        if not meta_s or meta_s.get("tissue") != meta_sid["tissue"]:
+            continue
+        if match_sex and meta_s.get("sex") != meta_sid["sex"]:
+            continue
+        group.append(s)
+    return group
+
+
 def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
     """
     Merge per-sample island methylation into a single wide matrix.
@@ -48,29 +76,71 @@ def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
 def detect_outliers(
     matrix: pd.DataFrame,
     sample_ids: list[str],
+    sample_meta: dict | None = None,
     min_delta: float = 0.20,
     z_threshold: float = 2.0,
+    x_chrom_prefix: str = "chrX",
 ) -> pd.DataFrame:
     """
-    For each island, compute Z-score of every sample against the
-    cohort distribution. Any sample can be flagged as an outlier.
+    For each island, compute Z-score of every sample against a background
+    distribution. Any sample can be flagged as an outlier.
+
+    sample_meta: optional {id: {"tissue": ..., "sex": ...}}. When given, the
+    background for a given sample at a given island is the OTHER samples of
+    the same tissue (and, on chrX, the same sex too -- see
+    compute_cohort_statistics for why). When sample_meta is None, behaviour
+    is unchanged: one shared cohort_mean/cohort_std/cohort_median computed
+    across every sample, same as before.
+
+    Because the background is now sample-specific (it excludes the sample
+    itself, and depends on tissue/sex), "cohort_mean"/"cohort_std" become
+    per-sample columns (group_mean_<id>/group_std_<id>) rather than one
+    shared column, whenever sample_meta is supplied. group_n_<id> records
+    how many samples were actually available for comparison at that site --
+    check it before trusting an outlier call from a small group.
     """
     df = matrix.copy()
-    meth_cols = [f"methylation_{s}" for s in sample_ids]
+    meth_cols = {s: f"methylation_{s}" for s in sample_ids}
 
-    # Cohort-level stats
-    df["cohort_mean"]   = df[meth_cols].mean(axis=1)
-    df["cohort_std"]    = df[meth_cols].std(axis=1)
-    df["cohort_median"] = df[meth_cols].median(axis=1)
+    if sample_meta is None:
+        cohort_mean   = df[list(meth_cols.values())].mean(axis=1)
+        cohort_std    = df[list(meth_cols.values())].std(axis=1)
+        df["cohort_mean"]   = cohort_mean
+        df["cohort_std"]    = cohort_std
+        df["cohort_median"] = df[list(meth_cols.values())].median(axis=1)
+    else:
+        is_x = df["chrom"].astype(str).str.startswith(x_chrom_prefix)
 
-    # Per-sample outlier stats — every sample treated equally
     for sid in sample_ids:
-        meth_col = f"methylation_{sid}"
-        df[f"delta_{sid}"]   = df[meth_col] - df["cohort_mean"]
-        df[f"zscore_{sid}"]  = (
-            (df[meth_col] - df["cohort_mean"]) /
-            df["cohort_std"].replace(0, np.nan)
-        )
+        meth_col = meth_cols[sid]
+
+        if sample_meta is None:
+            group_mean = df["cohort_mean"]
+            group_std  = df["cohort_std"]
+        else:
+            group_auto = _comparison_group(sid, sample_ids, sample_meta, match_sex=False)
+            group_x    = _comparison_group(sid, sample_ids, sample_meta, match_sex=True)
+
+            group_mean = pd.Series(np.nan, index=df.index)
+            group_std  = pd.Series(np.nan, index=df.index)
+            group_n    = pd.Series(0, index=df.index)
+
+            if group_auto:
+                cols = [meth_cols[s] for s in group_auto]
+                group_mean[~is_x] = df.loc[~is_x, cols].mean(axis=1)
+                group_std[~is_x]  = df.loc[~is_x, cols].std(axis=1)
+                group_n[~is_x]    = len(group_auto)
+            if group_x:
+                cols = [meth_cols[s] for s in group_x]
+                group_mean[is_x] = df.loc[is_x, cols].mean(axis=1)
+                group_std[is_x]  = df.loc[is_x, cols].std(axis=1)
+                group_n[is_x]    = len(group_x)
+
+            df[f"group_mean_{sid}"] = group_mean
+            df[f"group_n_{sid}"]    = group_n
+
+        df[f"delta_{sid}"]   = df[meth_col] - group_mean
+        df[f"zscore_{sid}"]  = (df[meth_col] - group_mean) / group_std.replace(0, np.nan)
         df[f"outlier_{sid}"] = (
             (df[f"zscore_{sid}"].abs() >= z_threshold) &
             (df[f"delta_{sid}"].abs()  >= min_delta)
@@ -87,8 +157,9 @@ def detect_outliers(
     )
     df["any_outlier"] = df["n_outliers"] > 0
 
+    sort_cols = ["n_outliers"] + (["cohort_std"] if sample_meta is None else [])
     return df.sort_values(
-        ["n_outliers", "cohort_std"], ascending=[False, False]
+        sort_cols, ascending=[False] * len(sort_cols)
     ).reset_index(drop=True)
 
 
@@ -134,18 +205,32 @@ def to_long_format(df: pd.DataFrame, sample_ids: list[str]) -> pd.DataFrame:
 def compute_cohort_statistics(
     matrix: pd.DataFrame,
     sample_ids: list[str],
+    sample_meta: dict | None = None,
     min_delta: float = 0.20,
     z_threshold: float = 2.0,
+    x_chrom_prefix: str = "chrX",
 ) -> pd.DataFrame:
     """
     For every sample at every island, run a one-vs-rest chi2 test.
     Every sample is treated as a potential outlier.
+
+    sample_meta: optional {id: {"tissue": ..., "sex": ...}}. When given, the
+    "rest" pooled for each sample is restricted to other samples of the same
+    tissue; on chrX (any chrom starting with `x_chrom_prefix`), it is further
+    restricted to the same sex. Sites/samples with no eligible comparison
+    group (e.g. a singleton tissue, or the only male in a WB group on chrX)
+    get pval/padj = NaN rather than a misleading 1.0 -- they were not tested,
+    not "not significant". When sample_meta is None, behaviour is unchanged
+    from before (pool every other sample, regardless of tissue/sex).
     """
     from scipy.stats import chi2_contingency
 
     df = matrix.copy()
+    is_x = df["chrom"].astype(str).str.startswith(x_chrom_prefix) if sample_meta is not None else None
 
     def chi2_p(row, n_mod_a, n_can_a, n_mod_b, n_can_b):
+        if pd.isna(row[n_mod_b]) or pd.isna(row[n_can_b]):
+            return np.nan
         table = [
             [row[n_mod_a], row[n_can_a]],
             [row[n_mod_b], row[n_can_b]],
@@ -156,11 +241,28 @@ def compute_cohort_statistics(
         return p
 
     for sid in sample_ids:
-        rest = [s for s in sample_ids if s != sid]
+        n_mod_rest = pd.Series(np.nan, index=df.index)
+        n_can_rest = pd.Series(np.nan, index=df.index)
 
-        # Pool all other samples
-        df[f"_n_mod_rest"]  = df[[f"n_mod_{s}"       for s in rest]].sum(axis=1)
-        df[f"_n_can_rest"]  = df[[f"n_canonical_{s}" for s in rest]].sum(axis=1)
+        if sample_meta is None:
+            rest = [s for s in sample_ids if s != sid]
+            n_mod_rest[:] = df[[f"n_mod_{s}"       for s in rest]].sum(axis=1)
+            n_can_rest[:] = df[[f"n_canonical_{s}" for s in rest]].sum(axis=1)
+        else:
+            group_auto = _comparison_group(sid, sample_ids, sample_meta, match_sex=False)
+            group_x    = _comparison_group(sid, sample_ids, sample_meta, match_sex=True)
+
+            if group_auto:
+                cols_mod, cols_can = [f"n_mod_{s}" for s in group_auto], [f"n_canonical_{s}" for s in group_auto]
+                n_mod_rest[~is_x] = df.loc[~is_x, cols_mod].sum(axis=1)
+                n_can_rest[~is_x] = df.loc[~is_x, cols_can].sum(axis=1)
+            if group_x:
+                cols_mod, cols_can = [f"n_mod_{s}" for s in group_x], [f"n_canonical_{s}" for s in group_x]
+                n_mod_rest[is_x] = df.loc[is_x, cols_mod].sum(axis=1)
+                n_can_rest[is_x] = df.loc[is_x, cols_can].sum(axis=1)
+
+        df["_n_mod_rest"] = n_mod_rest
+        df["_n_can_rest"] = n_can_rest
 
         df[f"pval_{sid}"] = df.apply(
             chi2_p, axis=1,
@@ -169,7 +271,14 @@ def compute_cohort_statistics(
             n_mod_b="_n_mod_rest",
             n_can_b="_n_can_rest",
         )
-        df[f"padj_{sid}"] = bh_adjust(df[f"pval_{sid}"])
+
+        pvals = df[f"pval_{sid}"]
+        tested = pvals.notna()
+        padj = pd.Series(np.nan, index=df.index)
+        if tested.any():
+            padj[tested] = bh_adjust(pvals[tested])
+        df[f"padj_{sid}"] = padj
+
         df = df.drop(columns=["_n_mod_rest", "_n_can_rest"])
 
     return df

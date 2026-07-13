@@ -25,6 +25,11 @@ def parse_args():
     )
     p.add_argument("--samples", required=True, nargs="+",
                    help="id=path pairs for each sample's phase-1 TSV, e.g. sample01=sample01.tsv")
+    p.add_argument("--sample-meta", nargs="+", default=None,
+                   help="id=tissue=sex triples, e.g. sample01=WB=female. When given, cohort "
+                        "statistics for a sample are computed only against other samples of the "
+                        "same tissue (and, on chrX, the same sex too). Omit to compare every "
+                        "sample against every other sample regardless of tissue/sex.")
     p.add_argument("--annotation", required=True, help="CpGs_with_promoters.bed")
     p.add_argument("--output", required=True, help="Output cohort TSV")
 
@@ -68,13 +73,27 @@ def main():
 
     all_ids = list(sample_dfs.keys())
 
+    sample_meta = None
+    if args.sample_meta:
+        sample_meta = {}
+        for triple in args.sample_meta:
+            parts = triple.split("=")
+            if len(parts) != 3:
+                sys.exit(f"ERROR: --sample-meta entries must be id=tissue=sex, got: {triple}")
+            sid, tissue, sex = parts
+            sample_meta[sid] = {"tissue": tissue or None, "sex": sex or None}
+        missing = [sid for sid in all_ids if sid not in sample_meta]
+        if missing:
+            print(f"  WARNING: no tissue/sex metadata for {len(missing)} sample(s): {', '.join(missing)}"
+                  f" — they will be excluded from every comparison group.")
+
     matrix = build_cohort_matrix(sample_dfs)
     print(f"\n  Islands covered across all samples: {len(matrix):,}")
 
-    result = compute_cohort_statistics(matrix, all_ids,
+    result = compute_cohort_statistics(matrix, all_ids, sample_meta=sample_meta,
                                        min_delta=args.min_delta,
                                        z_threshold=args.z_threshold)
-    result = detect_outliers(result, all_ids,
+    result = detect_outliers(result, all_ids, sample_meta=sample_meta,
                              min_delta=args.min_delta,
                              z_threshold=args.z_threshold)
     result = annotate_methylation(result, ann_df)

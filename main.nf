@@ -125,6 +125,7 @@ process COHORT {
 
     input:
     val sample_args
+    val sample_meta_args
     path annotation
     val min_delta
     val z_threshold
@@ -133,9 +134,11 @@ process COHORT {
     path "cohort_methylation.tsv"
 
     script:
+    def sample_meta_opt = sample_meta_args ? "--sample-meta ${sample_meta_args.join(' ')}" : ""
     """
     run_cohort.py \
         --samples ${sample_args.join(' ')} \
+        ${sample_meta_opt} \
         --annotation ${annotation} \
         --output cohort_methylation.tsv \
         --min-delta ${min_delta} \
@@ -182,5 +185,14 @@ workflow {
         .map { id, tsv -> "${id}=${tsv}" }
         .collect()
 
-    COHORT(sample_args, annotation, min_delta, z_threshold)
+    // tissue/sex come straight from the YAML (not the channel) since they're only
+    // needed by the COHORT process, not MODKIT. Missing tissue/sex on a sample
+    // becomes "NA" -- run_cohort.py excludes such samples from every comparison
+    // group rather than guessing, so it's safe but that sample won't get tested.
+    def hasSampleMeta = cfg.samples.any { s -> s.tissue || s.sex }
+    sample_meta_args = hasSampleMeta
+        ? cfg.samples.collect { s -> "${s.id}=${s.tissue ?: 'NA'}=${s.sex ?: 'NA'}" }
+        : []
+
+    COHORT(sample_args, sample_meta_args, annotation, min_delta, z_threshold)
 }
