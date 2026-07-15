@@ -27,8 +27,9 @@ def findBamIndex(bamPath) {
 
 // PacBio BAMs sometimes mix reads that carry MM/ML modification-call tags with reads
 // that don't (e.g. low-pass reads the kinetics caller couldn't confidently call). modkit
-// pileup can hang when it encounters that mix, so sample the first 1000 records and, if
-// any lack MM, pre-filter to MM-tagged reads only before handing the BAM to modkit.
+// pileup can hang when it encounters that mix. This is a cheap check (seconds, tiny
+// memory): sample the first 1000 records and report whether any lack MM, so the workflow
+// can route only the affected samples through the expensive FIX_MM_TAGS process.
 process CHECK_MM_TAGS {
     tag "$sample_id"
 
@@ -36,22 +37,50 @@ process CHECK_MM_TAGS {
     tuple val(sample_id), path(bam), path(bam_index)
 
     output:
-    tuple val(sample_id), path("out/*.bam"), path("out/*.bam.bai"), emit: bam
+    tuple val(sample_id), path(bam), path(bam_index), env(NEEDS_FIX), emit: checked
 
     script:
     """
-    mkdir out
     untagged=\$(samtools view ${bam} | head -n 1000 | awk -F'\\t' '{ok=0; for(i=12;i<=NF;i++) if (\$i ~ /^MM:/) {ok=1; break}; if (!ok) print}' | wc -l)
 
+    NEEDS_FIX=false
     if [ "\$untagged" -gt 0 ]; then
-        echo "[${sample_id}] \$untagged/1000 sampled reads missing MM tag -- filtering to MM-tagged reads"
-        samtools view -d MM -b ${bam} > out/${sample_id}.bam
-        samtools index out/${sample_id}.bam
+        echo "[${sample_id}] \$untagged/1000 sampled reads missing MM tag -- needs fixing"
+        NEEDS_FIX=true
     else
-        echo "[${sample_id}] all sampled reads carry MM tag -- no filtering needed"
-        ln -s \$(readlink -f ${bam}) out/${sample_id}.bam
-        ln -s \$(readlink -f ${bam_index}) out/${sample_id}.bam.bai
+        echo "[${sample_id}] all sampled reads carry MM tag -- no fix needed"
     fi
+    """
+}
+
+// Reads with neither MM nor ML are stamped with an empty "no modified bases called"
+// MM/ML pair (C+m?;  /  B:C with no values -- note no trailing comma before ';', which
+// would encode one empty delta entry instead of zero and leave MM/ML mismatched in
+// length) so they still contribute canonical-base coverage instead of being dropped.
+// Reads that already carry MM/ML pass through untouched. The two halves are then merged
+// back together and re-sorted, which is the expensive part of this process -- give
+// `samtools sort` most of the task's memory budget so it can use big in-memory chunks
+// instead of spilling to disk.
+process FIX_MM_TAGS {
+    tag "$sample_id"
+
+    input:
+    tuple val(sample_id), path(bam), path(bam_index)
+
+    output:
+    tuple val(sample_id), path("out/${sample_id}.bam"), path("out/${sample_id}.bam.bai"), emit: bam
+
+    script:
+    def sort_mem = (task.memory.toGiga() * 0.8 / task.cpus) as int
+    """
+    mkdir out
+    samtools view -h -d MM -b -o with_mm.bam -U without_mm.bam ${bam}
+    samtools view -h without_mm.bam \
+        | awk -F'\\t' 'BEGIN{OFS="\\t"} /^@/{print; next} {print \$0, "MM:Z:C+m?;", "ML:B:C"}' \
+        | samtools view -b -o tagged.bam -
+    samtools cat with_mm.bam tagged.bam \
+        | samtools sort -m ${sort_mem}G -@ ${task.cpus} -o out/${sample_id}.bam -
+    samtools index out/${sample_id}.bam
     """
 }
 
@@ -138,7 +167,18 @@ workflow {
 
     CHECK_MM_TAGS(samples_ch)
 
-    MODKIT(CHECK_MM_TAGS.out.bam, annotation, ref, include_bed, region, min_coverage, mod_code)
+    checked = CHECK_MM_TAGS.out.checked.branch { id, bam, bai, needs_fix ->
+        needs_fix: needs_fix == 'true'
+            return tuple(id, bam, bai)
+        ok: true
+            return tuple(id, bam, bai)
+    }
+
+    FIX_MM_TAGS(checked.needs_fix)
+
+    modkit_input_ch = checked.ok.mix(FIX_MM_TAGS.out.bam)
+
+    MODKIT(modkit_input_ch, annotation, ref, include_bed, region, min_coverage, mod_code)
 
     // Collect all "id path" pairs into one list, then run the cohort process once.
     sample_args = MODKIT.out.islands
