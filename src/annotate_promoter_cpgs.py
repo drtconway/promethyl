@@ -50,6 +50,9 @@ def parse_args():
                     help="Promoter window downstream of TSS (bp)")
     p.add_argument("--bedtools", default="bedtools",
                     help="Path to the bedtools executable")
+    p.add_argument("--all-islands", action="store_true",
+                    help="Keep all CpG islands, including those with no promoter overlap "
+                         "(uses bedtools -loj instead of -wa -wb; writes CpGs_all_islands.bed)")
     return p.parse_args()
 
 
@@ -119,20 +122,30 @@ def main():
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     promoters_bed = args.outdir / "GENCODEV49_promoters_2kb_plus500.bed"
-    cpgs_with_promoters = args.outdir / "CpGs_with_promoters.bed"
+    outname = "CpGs_all_islands.bed" if args.all_islands else "CpGs_with_promoters.bed"
+    cpgs_with_promoters = args.outdir / outname
 
     print(f"  Building promoter windows (-{args.upstream}/+{args.downstream} bp around TSS)...")
     promoters_df = build_promoter_bed(args.gtf, args.upstream, args.downstream)
     promoters_df.to_csv(promoters_bed, sep="\t", header=False, index=False)
     print(f"  {len(promoters_df):,} promoter records -> {promoters_bed}")
 
-    print(f"  Intersecting {args.cpg_islands.name} with promoters via bedtools...")
-    cmd = [
-        args.bedtools, "intersect",
-        "-a", str(args.cpg_islands),
-        "-b", str(promoters_bed),
-        "-wa", "-wb",
-    ]
+    if args.all_islands:
+        print(f"  Intersecting {args.cpg_islands.name} with promoters via bedtools (-loj: keep all islands)...")
+        cmd = [
+            args.bedtools, "intersect",
+            "-a", str(args.cpg_islands),
+            "-b", str(promoters_bed),
+            "-loj",
+        ]
+    else:
+        print(f"  Intersecting {args.cpg_islands.name} with promoters via bedtools (promoter-overlap only)...")
+        cmd = [
+            args.bedtools, "intersect",
+            "-a", str(args.cpg_islands),
+            "-b", str(promoters_bed),
+            "-wa", "-wb",
+        ]
     with open(cpgs_with_promoters, "w") as out:
         subprocess.run(cmd, stdout=out, check=True)
 

@@ -11,7 +11,12 @@ def load_promoter_annotations(path: str) -> pd.DataFrame:
         "prom_chrom", "prom_start", "prom_end",
         "gene", "transcript", "strand", "gene_id",
     ]
-    return pd.read_csv(path, sep="\t", header=None, names=cols)
+    df = pd.read_csv(path, sep="\t", header=None, names=cols)
+    # bedtools -loj fills unmatched B-side fields with "." (--all-islands mode,
+    # islands with no promoter overlap) — treat as missing, not a literal gene/transcript name.
+    for col in ["prom_chrom", "gene", "transcript", "strand", "gene_id"]:
+        df[col] = df[col].replace(".", pd.NA)
+    return df
 
 
 def annotate_cpg_sites(cpg_df: pd.DataFrame, ann_df: pd.DataFrame) -> pd.DataFrame:
