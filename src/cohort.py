@@ -57,9 +57,24 @@ def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
     """
     Merge per-sample island methylation into a single wide matrix.
     One row per island, one set of columns per sample.
+
+    Uses an OUTER merge: an island is kept if ANY sample has coverage
+    there, not only islands covered in every sample. Previously this was
+    an inner merge, which meant a single low-coverage sample anywhere in
+    the cohort would silently drop that island for every sample -- and
+    the more samples you add, the more likely that becomes, even though
+    nothing changed for the samples that *did* have coverage there.
+
+    Samples without coverage at an island get NaN in their
+    methylation_/coverage_/n_mod_/n_canonical_ columns. Downstream
+    consumers (detect_outliers, compute_cohort_statistics) already skip
+    NaN when building comparison groups. `n_samples_covered` records how
+    many samples actually contributed data at each island, so
+    low-N/singleton islands can be spotted or filtered downstream.
     """
     coords = ["chrom", "start", "end", "cpg_island"]
     matrix = None
+    sample_ids = list(sample_dfs.keys())
 
     for sample_id, df in sample_dfs.items():
         # Keep only columns that exist for this sample
@@ -68,7 +83,10 @@ def build_cohort_matrix(sample_dfs: dict) -> pd.DataFrame:
         if matrix is None:
             matrix = sub
         else:
-            matrix = matrix.merge(sub, on=coords, how="inner")
+            matrix = matrix.merge(sub, on=coords, how="outer")
+
+    meth_cols = [f"methylation_{sid}" for sid in sample_ids if f"methylation_{sid}" in matrix.columns]
+    matrix["n_samples_covered"] = matrix[meth_cols].notna().sum(axis=1)
 
     return matrix
 
@@ -129,12 +147,16 @@ def detect_outliers(
                 cols = [meth_cols[s] for s in group_auto]
                 group_mean[~is_x] = df.loc[~is_x, cols].mean(axis=1)
                 group_std[~is_x]  = df.loc[~is_x, cols].std(axis=1)
-                group_n[~is_x]    = len(group_auto)
+                # Per-row count of group members with actual data at this
+                # island (not just the group's nominal size) -- now that
+                # the matrix is an outer merge, a given row may have fewer
+                # covered members than the full comparison group.
+                group_n[~is_x]    = df.loc[~is_x, cols].notna().sum(axis=1)
             if group_x:
                 cols = [meth_cols[s] for s in group_x]
                 group_mean[is_x] = df.loc[is_x, cols].mean(axis=1)
                 group_std[is_x]  = df.loc[is_x, cols].std(axis=1)
-                group_n[is_x]    = len(group_x)
+                group_n[is_x]    = df.loc[is_x, cols].notna().sum(axis=1)
 
             df[f"group_mean_{sid}"] = group_mean
             df[f"group_n_{sid}"]    = group_n
@@ -229,7 +251,7 @@ def compute_cohort_statistics(
     is_x = df["chrom"].astype(str).str.startswith(x_chrom_prefix) if sample_meta is not None else None
 
     def chi2_p(row, n_mod_a, n_can_a, n_mod_b, n_can_b):
-        if pd.isna(row[n_mod_b]) or pd.isna(row[n_can_b]):
+        if pd.isna(row[n_mod_a]) or pd.isna(row[n_can_a]) or pd.isna(row[n_mod_b]) or pd.isna(row[n_can_b]):
             return np.nan
         table = [
             [row[n_mod_a], row[n_can_a]],
@@ -246,20 +268,23 @@ def compute_cohort_statistics(
 
         if sample_meta is None:
             rest = [s for s in sample_ids if s != sid]
-            n_mod_rest[:] = df[[f"n_mod_{s}"       for s in rest]].sum(axis=1)
-            n_can_rest[:] = df[[f"n_canonical_{s}" for s in rest]].sum(axis=1)
+            # min_count=1: if every "rest" sample is NaN at this row (outer
+            # merge), sum() would otherwise silently return 0 rather than
+            # NaN, which chi2_p can't distinguish from a genuine zero count.
+            n_mod_rest[:] = df[[f"n_mod_{s}"       for s in rest]].sum(axis=1, min_count=1)
+            n_can_rest[:] = df[[f"n_canonical_{s}" for s in rest]].sum(axis=1, min_count=1)
         else:
             group_auto = _comparison_group(sid, sample_ids, sample_meta, match_sex=False)
             group_x    = _comparison_group(sid, sample_ids, sample_meta, match_sex=True)
 
             if group_auto:
                 cols_mod, cols_can = [f"n_mod_{s}" for s in group_auto], [f"n_canonical_{s}" for s in group_auto]
-                n_mod_rest[~is_x] = df.loc[~is_x, cols_mod].sum(axis=1)
-                n_can_rest[~is_x] = df.loc[~is_x, cols_can].sum(axis=1)
+                n_mod_rest[~is_x] = df.loc[~is_x, cols_mod].sum(axis=1, min_count=1)
+                n_can_rest[~is_x] = df.loc[~is_x, cols_can].sum(axis=1, min_count=1)
             if group_x:
                 cols_mod, cols_can = [f"n_mod_{s}" for s in group_x], [f"n_canonical_{s}" for s in group_x]
-                n_mod_rest[is_x] = df.loc[is_x, cols_mod].sum(axis=1)
-                n_can_rest[is_x] = df.loc[is_x, cols_can].sum(axis=1)
+                n_mod_rest[is_x] = df.loc[is_x, cols_mod].sum(axis=1, min_count=1)
+                n_can_rest[is_x] = df.loc[is_x, cols_can].sum(axis=1, min_count=1)
 
         df["_n_mod_rest"] = n_mod_rest
         df["_n_can_rest"] = n_can_rest

@@ -88,7 +88,9 @@ def main():
                   f" — they will be excluded from every comparison group.")
 
     matrix = build_cohort_matrix(sample_dfs)
-    print(f"\n  Islands covered across all samples: {len(matrix):,}")
+    full_coverage = (matrix["n_samples_covered"] == len(all_ids)).sum()
+    print(f"\n  Islands with coverage in ≥1 sample : {len(matrix):,}")
+    print(f"  Islands with coverage in all {len(all_ids)} samples: {full_coverage:,}")
 
     result = compute_cohort_statistics(matrix, all_ids, sample_meta=sample_meta,
                                        min_delta=args.min_delta,
